@@ -74,11 +74,11 @@ class FamaMacBeth(object):
         # run t-cross sectional regressions  and get betas
         if type(x) != tuple:           
             betas = [self._quickOLS(y.iloc[i,:].to_frame(), x.iloc[i,:].to_frame(),\
-                       add_constant = True) for i in range(T)]
+                       add_constant = self._const) for i in range(T)]
         else:
             betas = [self._quickOLS(y.iloc[i,:].to_frame(), pd.concat((\
                                     [x[j].iloc[i,:].to_frame() for j in range(len(x))]),\
-                                     axis=1), add_constant = True)\
+                                     axis=1), add_constant = self._const)\
                                      for i in range(T)]
         # average betas over time
         avbeta = pd.concat(betas, axis=1)
@@ -115,6 +115,9 @@ class FamaMacBeth(object):
             
         self.output.columns = ['estimate','se']
         self.output['t-stat'] = self.output['estimate'].divide(self.output['se'])
+        # estimate R2
+        self._getRsquared()
+        
         
         
 
@@ -161,9 +164,10 @@ class FamaMacBeth(object):
         
         # getting and printing small stats
         sts = self._smallStats()
-        for i in range(3):
+        numItems = int(np.round(len(sts)/2))
+        for i in range(numItems):
             item1 = sts[i]
-            item2 = sts[i+3]
+            item2 = sts[i+numItems]
             print(self._cellStr(item1[0], item1[1], smallCol) + tab*' '
                   + self._cellStr(item2[0], item2[1], smallCol))
         
@@ -264,9 +268,24 @@ class FamaMacBeth(object):
         sts.append(['Errors', errors])
         now = pd.to_datetime('today')
         sts.append(['Date', now.strftime("%a, %b %d %Y")])
-        sts.append(['Time', now.strftime("%H:%M:%S")])        
+        sts.append(['Time', now.strftime("%H:%M:%S")])     
+        sts.append(['',''])
         sts.append(['Num obs T', str(self._T)])
+        sts.append(['Avg Obs T',str(np.round(self._Y.mean(axis=1).mean(),2))])
+        sts.append(['Min Obs T',str(np.round(self._Y.mean(axis=1).min(),2))])
+        sts.append(['Max Obs T',str(np.round(self._Y.mean(axis=1).max(),2))])
+        sts.append(['',''])
         sts.append(['Num obs N', str(self._N)])
+        sts.append(['Avg Obs N',str(np.round(self._Y.mean(axis=0).mean(),2))])
+        sts.append(['Min Obs N',str(np.round(self._Y.mean(axis=0).min(),2))])
+        sts.append(['Max Obs N',str(np.round(self._Y.mean(axis=0).max(),2))])
+        sts.append(['',''])
+        sts.append(['Overall R-squared:',str(np.round(self.rsquared,2))])
+        sts.append(['Between R-squared:',str(np.round(self.rsquaredbe,2))])
+        sts.append(['Within R-squared:',str(np.round(self.rsquaredwithin,2))])
+        sts.append(['F-stat','-'])
+        sts.append(['p-value','-'])
+        
         return sts   
         
      
@@ -285,15 +304,39 @@ class FamaMacBeth(object):
                 columns = ['Const']), X), axis=1, join='inner')
         if (len(X)>0) & (len(Y)>0):
             return pd.DataFrame(np.linalg.inv(X.T@X)@X.T@Y)
-
     
-    def _quickOLSerrors(self, Y, X, beta, add_constant = True):
+       
+    def _quickOLSerrors(self, Y, X, beta, add_constant = True, errors = True,\
+                        crossSection = True):
         """
         This function gets OLS errors
         """
-        X = pd.concat((pd.DataFrame(1, index = X.index,\
-                columns = ['Const']), X), axis=1, join='inner')
-        return pd.DataFrame(Y.values - X.values@beta.values, index = Y.index, columns = Y.columns)
+        # first dropna in X and Y
+        X = X.dropna()
+        Y = Y.dropna()
+
+        if crossSection:
+            commonCols = np.intersect1d(X.columns, Y.columns)
+            
+        commonTimes = np.intersect1d(X.index, Y.index)
+        if crossSection:
+            X = X.loc[commonTimes, commonCols]
+            Y = Y.loc[commonTimes, commonCols]
+        else:
+            X = X.loc[commonTimes,:]
+            Y = Y.loc[commonTimes,:]
+          
+        # add constant if needed
+        if add_constant:
+            X = pd.concat((pd.DataFrame(1, index = X.index,\
+                    columns = ['Const']), X), axis=1, join='inner')
+
+        if errors:
+            return pd.DataFrame(Y.values - X.values@beta.values, index = Y.index,\
+                            columns = Y.columns)
+        else:
+            return pd.DataFrame(X.values@beta.values, index = Y.index,\
+                            columns = Y.columns)
     
     
     def _NeweyWest(self, data, lags = 1):
@@ -312,3 +355,77 @@ class FamaMacBeth(object):
             GplusG = gamma+gamma.T
             V = V+w[i]*GplusG
         return V
+    
+    def _getRsquared(self):
+        """
+        The method of estimating of R-sqaures is taken from Stata
+        """
+        Y = self._Y
+        X = self._X
+        T = self._T
+        """
+        Calculating overall R-squared simply as a squared correlation
+        """
+        # get forecasts for general regression
+        if type(X) != tuple:
+            pred1 = [self._quickOLSerrors(Y.iloc[i,:].to_frame(),\
+                                        X.iloc[i,:].to_frame(),\
+                                        add_constant = self._const, errors = False)\
+                                        for i in range(T)]
+        else:
+            pred1 = [self._quickOLSerrors(Y.iloc[i,:].to_frame(),\
+                     pd.concat(([X[j].iloc[i,:].to_frame()\
+                     for j in range(len(X))]), axis=1),\
+                     self.beta, errors = False, add_constant = self._const)\
+                     for i in range(T)]
+        pred1 = pd.concat(pred1, axis=1, sort = True).T
+        self._pred1 = pred1
+        
+        # compare with Yb
+        yvector = self._Y.loc[pred1.index, pred1.columns]
+        yvector = np.reshape(yvector.values, (yvector.shape[1]*yvector.shape[0]))
+        predvector = np.reshape(pred1.values, (pred1.shape[1]*pred1.shape[0]))
+        # combine in one frame
+        vectorData = pd.DataFrame([yvector, predvector],\
+                                  columns = range(len(yvector)),\
+                                  index =['ys','preds']).T.dropna()
+        # estimate r-sqaured as a fraction of variances
+        self.rsquared = vectorData.corr().values[1,0]**2
+        """
+        Calculating between R squared
+        """
+        yavt = Y.mean(axis=0)
+        if type(X) != tuple:
+            xavt = X.mean(axis=0)
+        else:
+            xavt = pd.concat([X[j].mean(axis=0) for j in range(len(X))], axis=1)
+
+        # get forecast for between regression
+        pred2 = self._quickOLSerrors(yavt.to_frame(), xavt,\
+                                     self.beta, errors = False,\
+                                     add_constant = self._const,\
+                                     crossSection=False)
+        self._pred2 = pred2
+        vectorData = pd.concat((yavt, pred2), axis=1, join='inner').dropna()
+        self.rsquaredbe = vectorData.corr().values[1,0]**2
+        
+        """
+        Calculating within R squared
+        """
+        cmnCols = np.intersect1d(pred1.columns, pred2.index)
+        pred3 = pred1.loc[:, cmnCols] \
+              - np.ones(pred1.loc[:, cmnCols].shape)\
+              *pred2.loc[cmnCols].T.values
+        self._pred3 = pred3
+        # get vector of Y
+        yvector = self._Y.loc[pred3.index, pred3.columns]
+        yvector = np.reshape(yvector.values,\
+                             (yvector.shape[1]*yvector.shape[0]))
+        # get vector of predictions
+        predvector = np.reshape(pred3.values, (pred3.shape[1]*pred3.shape[0]))
+        # combine in one frame
+        vectorData = pd.DataFrame([yvector, predvector],\
+                                  columns = range(len(yvector)),\
+                                  index =['ys','preds']).T.dropna()
+        # estimate r-sqaured as a fraction of variances
+        self.rsquaredwithin = vectorData.corr().values[1,0]**2
