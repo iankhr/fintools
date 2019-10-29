@@ -1,4 +1,6 @@
-# famamacbeth
+# Different tools for financial research
+
+## famamacbeth
 The code implements FamaMacbeth regression as in Fama, F. & Macbeth, J.D. (2003) "Risk, Return and Equilibrium: Empirical Tests"
 Journal of Political Economy Vol 81, No 3, pp. 607-636
 
